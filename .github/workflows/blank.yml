@@ -1,4 +1,4 @@
-name: Virtual PC - Ubuntu + Tailscale + RDP
+name: Virtual PC gamer - Ubuntu + Tailscale + RDP
 
 on:
   workflow_dispatch:
