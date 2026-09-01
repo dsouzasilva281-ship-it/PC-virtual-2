@@ -1,4 +1,4 @@
-name: Virtual PC gamer - Ubuntu + Tailscale + RDP
+name: Virtual PC - Ubuntu + Tailscale + RDP 777
 
 on:
   workflow_dispatch:
@@ -9,9 +9,13 @@ jobs:
     timeout-minutes: 350
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ==========================================
+      # INSTALAR DESKTOP
+      # ==========================================
       - name: Instalar XFCE + XRDP
         shell: bash
         run: |
@@ -22,55 +26,119 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 \
             xfce4-goodies \
+            xfce4-session \
             xrdp \
             xorgxrdp \
+            dbus \
             dbus-x11 \
+            policykit-1 \
+            network-manager \
             netcat-openbsd
 
-      - name: Criar usuário RDP
+          echo "XFCE instalado."
+          echo "XRDP instalado."
+
+      # ==========================================
+      # CRIAR USUÁRIO
+      # ==========================================
+      - name: Criar usuário zezin
         shell: bash
         run: |
+          set -e
+
           USERNAME="zezin"
           PASSWORD="zezin123"
 
           if id "$USERNAME" >/dev/null 2>&1; then
-            echo "Usuário já existe."
+            sudo usermod -s /bin/bash "$USERNAME"
           else
-            sudo useradd -m -s /bin/bash "$USERNAME"
+            sudo useradd \
+              --create-home \
+              --shell /bin/bash \
+              "$USERNAME"
           fi
 
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
+
           sudo usermod -aG sudo "$USERNAME"
 
-          sudo tee "/home/$USERNAME/.xsession" > /dev/null <<'EOF'
+          echo "Usuário configurado."
+
+      # ==========================================
+      # CONFIGURAR SESSÃO XFCE
+      # ==========================================
+      - name: Configurar sessão XFCE
+        shell: bash
+        run: |
+          set -e
+
+          USERNAME="zezin"
+          HOME_DIR="/home/$USERNAME"
+
+          sudo mkdir -p "$HOME_DIR"
+
+          sudo tee "$HOME_DIR/.xsession" > /dev/null <<'EOF'
           #!/bin/bash
-          export XDG_CURRENT_DESKTOP=XFCE
-          export XDG_SESSION_DESKTOP=xfce
-          exec startxfce4
+
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+
+          exec dbus-run-session -- startxfce4
           EOF
 
-          sudo chown "$USERNAME:$USERNAME" "/home/$USERNAME/.xsession"
-          sudo chmod +x "/home/$USERNAME/.xsession"
+          sudo chmod +x "$HOME_DIR/.xsession"
 
+          sudo chown "$USERNAME:$USERNAME" \
+            "$HOME_DIR/.xsession"
+
+          # Criar configuração mínima do XFCE
+          sudo -u "$USERNAME" mkdir -p \
+            "$HOME_DIR/.config/xfce4"
+
+          # Impedir bloqueio automático da sessão
+          sudo -u "$USERNAME" mkdir -p \
+            "$HOME_DIR/.config/autostart"
+
+          # Configuração de ambiente para XRDP
+          sudo tee /etc/environment > /dev/null <<'EOF'
+          LANG=C.UTF-8
+          LC_ALL=C.UTF-8
+          EOF
+
+      # ==========================================
+      # CONFIGURAR XRDP
+      # ==========================================
       - name: Configurar XRDP
         shell: bash
         run: |
+          set -e
+
           sudo adduser xrdp ssl-cert || true
+
+          sudo cp /etc/xrdp/startwm.sh \
+            /etc/xrdp/startwm.sh.backup
 
           sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
           #!/bin/sh
 
-          export XDG_SESSION_DESKTOP=xfce
-          export XDG_CURRENT_DESKTOP=XFCE
-
           if [ -r /etc/profile ]; then
-            . /etc/profile
+              . /etc/profile
           fi
 
-          exec startxfce4
+          if [ -r "$HOME/.profile" ]; then
+              . "$HOME/.profile"
+          fi
+
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+
+          exec "$HOME/.xsession"
           EOF
 
           sudo chmod +x /etc/xrdp/startwm.sh
+
+          sudo sed -i 's/^test -x \/etc\/X11\/Xsession/#&/' \
+            /etc/xrdp/startwm.sh || true
 
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
@@ -80,20 +148,28 @@ jobs:
           echo "===== XRDP ====="
           sudo systemctl --no-pager status xrdp || true
 
-          echo "===== PORTA 3389 ====="
-          sudo ss -lntp | grep 3389 || true
-
+      # ==========================================
+      # INSTALAR TAILSCALE
+      # ==========================================
       - name: Instalar Tailscale
         shell: bash
         run: |
+          set -e
+
           curl -fsSL https://tailscale.com/install.sh | sh
+
           tailscale version
 
+      # ==========================================
+      # CONECTAR TAILSCALE
+      # ==========================================
       - name: Conectar Tailscale
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         shell: bash
         run: |
+          set -e
+
           if [ -z "$TS_AUTHKEY" ]; then
             echo "ERRO: Secret TS_AUTHKEY não configurado."
             exit 1
@@ -105,28 +181,51 @@ jobs:
 
           sleep 5
 
-          echo "===== TAILSCALE STATUS ====="
+          echo ""
+          echo "===== TAILSCALE ====="
+
           sudo tailscale status
 
-      - name: Verificar RDP
+          echo ""
+          echo "===== IP TAILSCALE ====="
+
+          sudo tailscale ip -4
+
+      # ==========================================
+      # TESTAR XRDP
+      # ==========================================
+      - name: Testar servidor RDP
         shell: bash
         run: |
-          sudo tailscale set --shields-up=false || true
+          set -e
 
-          echo "===== IP TAILSCALE ====="
-          IP=$(sudo tailscale ip -4)
-          echo "$IP"
+          echo "===== SERVIÇO ====="
 
-          echo "===== PORTA RDP ====="
+          if ! sudo systemctl is-active --quiet xrdp; then
+            echo "XRDP não está funcionando."
+            sudo journalctl -u xrdp --no-pager -n 100
+            exit 1
+          fi
+
+          echo "XRDP: OK"
+
+          echo ""
+          echo "===== PORTA 3389 ====="
+
           sudo ss -lntp | grep ':3389'
 
-          echo "===== TESTE RDP LOCAL ====="
+          echo ""
+          echo "===== TESTE ====="
+
           nc -zv 127.0.0.1 3389
 
-          echo "===== TESTE RDP TAILSCALE ====="
-          nc -zv "$IP" 3389
+          echo ""
+          echo "RDP funcionando."
 
-      - name: Mostrar dados da conexão
+      # ==========================================
+      # MOSTRAR DADOS
+      # ==========================================
+      - name: Mostrar dados da máquina
         shell: bash
         run: |
           IP=$(sudo tailscale ip -4)
@@ -145,12 +244,23 @@ jobs:
           echo "SENHA:"
           echo "zezin123"
           echo ""
+          echo "DESKTOP:"
+          echo "XFCE"
+          echo ""
+          echo "REDE:"
+          echo "Tailscale"
+          echo ""
           echo "========================================"
 
+      # ==========================================
+      # MANTER RUNNER
+      # ==========================================
       - name: Manter máquina ativa
         shell: bash
         run: |
+          echo "Virtual PC ativo."
+
           while true; do
-            echo "Virtual PC ativo: $(date)"
+            echo "[$(date '+%H:%M:%S')] RDP + XFCE + Tailscale OK"
             sleep 60
           done
