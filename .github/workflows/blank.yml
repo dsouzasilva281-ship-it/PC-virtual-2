@@ -9,7 +9,7 @@ on:
         default: "remote"
         type: string
       password:
-        description: "123456"
+        description: "12345678"
         required: true
         type: string
 
