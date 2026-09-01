@@ -2,21 +2,11 @@ name: Virtual PC - Ubuntu + Tailscale + RDP
 
 on:
   workflow_dispatch:
-    inputs:
-      username:
-        description: "zezin"
-        required: true
-        default: "remote"
-        type: string
-      password:
-        description: "12345678"
-        required: true
-        type: string
 
 jobs:
   virtual-pc:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 350
 
     steps:
       - name: Checkout
@@ -33,83 +23,77 @@ jobs:
             xfce4 \
             xfce4-goodies \
             xrdp \
-            dbus-x11
+            xorgxrdp \
+            dbus-x11 \
+            netcat-openbsd
 
-          sudo systemctl enable xrdp
-          sudo systemctl start xrdp
-
-          echo "XFCE e XRDP instalados."
-
-      - name: Criar usuário do RDP
-        env:
-          RDP_USER: ${{ inputs.username }}
-          RDP_PASSWORD: ${{ inputs.password }}
+      - name: Criar usuário RDP
         shell: bash
         run: |
-          set -e
+          USERNAME="zezin"
+          PASSWORD="zezin123"
 
-          if [ ${#RDP_PASSWORD} -lt 8 ]; then
-            echo "A senha precisa ter pelo menos 8 caracteres."
-            exit 1
-          fi
-
-          if id "$RDP_USER" >/dev/null 2>&1; then
+          if id "$USERNAME" >/dev/null 2>&1; then
             echo "Usuário já existe."
           else
-            sudo useradd -m -s /bin/bash "$RDP_USER"
+            sudo useradd -m -s /bin/bash "$USERNAME"
           fi
 
-          echo "$RDP_USER:$RDP_PASSWORD" | sudo chpasswd
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo "$USERNAME"
 
-          sudo usermod -aG sudo "$RDP_USER"
+          sudo tee "/home/$USERNAME/.xsession" > /dev/null <<'EOF'
+          #!/bin/bash
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_SESSION_DESKTOP=xfce
+          exec startxfce4
+          EOF
 
-          sudo -u "$RDP_USER" bash -c '
-            echo "startxfce4" > "$HOME/.xsession"
-            chmod +x "$HOME/.xsession"
-          '
-
-          echo "Usuário RDP configurado."
+          sudo chown "$USERNAME:$USERNAME" "/home/$USERNAME/.xsession"
+          sudo chmod +x "/home/$USERNAME/.xsession"
 
       - name: Configurar XRDP
         shell: bash
         run: |
-          set -e
-
           sudo adduser xrdp ssl-cert || true
 
-          sudo sed -i 's/^test -x/#test -x/' /etc/xrdp/startwm.sh
-          sudo sed -i 's/^exec/#exec/' /etc/xrdp/startwm.sh
+          sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
+          #!/bin/sh
 
-          cat <<'EOF' | sudo tee -a /etc/xrdp/startwm.sh
-          export XDG_CURRENT_DESKTOP=XFCE
           export XDG_SESSION_DESKTOP=xfce
-          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg
-          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share:/usr/local/share
-          startxfce4
+          export XDG_CURRENT_DESKTOP=XFCE
+
+          if [ -r /etc/profile ]; then
+            . /etc/profile
+          fi
+
+          exec startxfce4
           EOF
 
+          sudo chmod +x /etc/xrdp/startwm.sh
+
+          sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
           sleep 5
 
+          echo "===== XRDP ====="
           sudo systemctl --no-pager status xrdp || true
+
+          echo "===== PORTA 3389 ====="
+          sudo ss -lntp | grep 3389 || true
 
       - name: Instalar Tailscale
         shell: bash
         run: |
-          set -e
-
           curl -fsSL https://tailscale.com/install.sh | sh
-
           tailscale version
 
-      - name: Conectar ao Tailscale
+      - name: Conectar Tailscale
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         shell: bash
         run: |
-          set -e
-
           if [ -z "$TS_AUTHKEY" ]; then
             echo "ERRO: Secret TS_AUTHKEY não configurado."
             exit 1
@@ -121,59 +105,52 @@ jobs:
 
           sleep 5
 
-          echo ""
-          echo "========== TAILSCALE =========="
+          echo "===== TAILSCALE STATUS ====="
           sudo tailscale status
-
-          echo ""
-          echo "========== IP =========="
-          sudo tailscale ip -4
 
       - name: Verificar RDP
         shell: bash
         run: |
-          echo "========== PORTA 3389 =========="
+          sudo tailscale set --shields-up=false || true
 
-          sudo ss -lntp | grep ':3389' || {
-            echo "XRDP não está escutando na porta 3389."
-            sudo journalctl -u xrdp --no-pager -n 50
-            exit 1
-          }
+          echo "===== IP TAILSCALE ====="
+          IP=$(sudo tailscale ip -4)
+          echo "$IP"
 
-          echo "XRDP está ativo."
+          echo "===== PORTA RDP ====="
+          sudo ss -lntp | grep ':3389'
+
+          echo "===== TESTE RDP LOCAL ====="
+          nc -zv 127.0.0.1 3389
+
+          echo "===== TESTE RDP TAILSCALE ====="
+          nc -zv "$IP" 3389
 
       - name: Mostrar dados da conexão
-        env:
-          RDP_USER: ${{ inputs.username }}
         shell: bash
         run: |
           IP=$(sudo tailscale ip -4)
 
           echo ""
-          echo "============================================"
-          echo "           VIRTUAL PC ONLINE"
-          echo "============================================"
+          echo "========================================"
+          echo "          VIRTUAL PC ONLINE"
+          echo "========================================"
           echo ""
           echo "ENDEREÇO RDP:"
           echo "$IP:3389"
           echo ""
           echo "USUÁRIO:"
-          echo "$RDP_USER"
+          echo "zezin"
           echo ""
           echo "SENHA:"
-          echo "A senha informada no Run workflow"
+          echo "zezin123"
           echo ""
-          echo "CLIENTE:"
-          echo "Microsoft Remote Desktop / Remmina"
-          echo ""
-          echo "============================================"
+          echo "========================================"
 
       - name: Manter máquina ativa
         shell: bash
         run: |
-          echo "Virtual PC ativo."
-
           while true; do
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RDP + Tailscale funcionando"
+            echo "Virtual PC ativo: $(date)"
             sleep 60
           done
