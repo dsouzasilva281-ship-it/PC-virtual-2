@@ -1,11 +1,11 @@
-name: Virtual PC - Ubuntu + Tailscale + RDP 777
+name: Virtual PC - Ubuntu + Tailscale  xvd+ RDP 777
 
 on:
   workflow_dispatch:
 
 jobs:
   virtual-pc:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 350
 
     steps:
